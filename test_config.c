@@ -10,12 +10,13 @@
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
+#include <signal.h>
 #include "drm_config.h"
 
 /* Defined in drm_colortemp_daemon_inotify.o */
 typedef struct {
-	volatile int running;
-	volatile int reload_config;
+	volatile sig_atomic_t running;
+	volatile sig_atomic_t reload_config;
 	config_t config;
 } daemon_ctx_t;
 extern daemon_ctx_t ctx;

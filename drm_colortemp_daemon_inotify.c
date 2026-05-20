@@ -31,8 +31,8 @@
 
 // Daemon context - replaces global state
 typedef struct {
-	volatile int running;
-	volatile int reload_config;
+	volatile sig_atomic_t running;
+	volatile sig_atomic_t reload_config;
 	config_t config;
 } daemon_ctx_t;
 
