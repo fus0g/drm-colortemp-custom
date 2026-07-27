@@ -14,12 +14,12 @@ license=('Apache-2.0')
 # libcosmic/winit dlopen() libwayland-client and libxkbcommon; the applet renders
 # with tiny-skia/softbuffer (software), so no Vulkan or GL runtime is needed.
 depends=('drm-colortemp' 'gcc-libs' 'libxkbcommon' 'wayland' 'sudo' 'kbd'
-         'ttf-font')
+         'ttf-font' 'hicolor-icon-theme')
 # winit's X11 backend is also dlopen()ed; unused under COSMIC (Wayland).
 optdepends=('libx11: X11 backend fallback'
             'libxcb: X11 backend fallback'
             'libxi: X11 backend fallback')
-makedepends=('rust' 'cargo' 'git' 'cmake' 'pkgconf')
+makedepends=('rust' 'cargo' 'git')
 provides=("$_appletname=$pkgver")
 conflicts=("$_appletname")
 backup=('etc/sudoers.d/drm-colortemp-applet')

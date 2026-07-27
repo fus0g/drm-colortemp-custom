@@ -112,8 +112,7 @@ git push origin master
 Same shape for `PKGBUILD-cosmic-applet-git` →
 `ssh://aur@aur.archlinux.org/cosmic-applet-colortemp-git.git`.
 
-The applet's first build compiles libcosmic (~10 min) and needs `cmake` and
-`pkgconf` at build time — both are in `makedepends`. `libcosmic` is a pinned
+The applet's first build compiles libcosmic (~10 min). `libcosmic` is a pinned
 **git** dependency, so `prepare()` needs network access; `--frozen` in `build()`
 is satisfied by the `cargo fetch` that `prepare()` already ran.
 
