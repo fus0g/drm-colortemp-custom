@@ -10,6 +10,8 @@ section heading format strict: `## [X.Y.Z] - YYYY-MM-DD`.
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-07-27
+
 ### Added
 - Optional COSMIC panel applet (`applet/`, Rust/libcosmic): one-click
   Auto / Night / Day from the panel, driving the existing VT-switch

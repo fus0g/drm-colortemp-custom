@@ -8,7 +8,7 @@
 # version, so the two packages stay legible as a matched pair.
 pkgname=cosmic-applet-colortemp
 _pkgname=drm-colortemp
-pkgver=2.0.1
+pkgver=2.1.0
 pkgrel=1
 pkgdesc="COSMIC panel applet for drm-colortemp: one-click screen color temperature"
 arch=('x86_64')
