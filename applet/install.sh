@@ -17,6 +17,22 @@ if ! id -u "$APPLET_USER" >/dev/null 2>&1; then
     exit 1
 fi
 
+# A packaged install owns the same /etc/sudoers.d/drm-colortemp-applet but
+# authorizes /usr/bin/drm-colortemp-apply, while this script installs the helper
+# to /usr/local/bin — which the applet prefers at runtime. Mixing the two yields
+# sudo denials on every action, so refuse instead of silently breaking it.
+# Checked twice: once up front to fail fast, and again immediately before the
+# first write, because the build in between can take ~10 minutes.
+check_no_packaged_install() {
+    [ -e /usr/bin/drm-colortemp-apply ] || return 0
+    echo "ERROR: a packaged applet install was detected (/usr/bin/drm-colortemp-apply)." >&2
+    echo "The two layouts are mutually exclusive. Remove it first:" >&2
+    echo "  sudo apt remove drm-colortemp-cosmic-applet   # Debian/Ubuntu" >&2
+    echo "  sudo pacman -R cosmic-applet-colortemp        # Arch" >&2
+    exit 1
+}
+check_no_packaged_install
+
 BIN=target/release/cosmic-applet-colortemp
 
 # 1. Build (as the invoking user, not root, if possible)
@@ -28,6 +44,9 @@ if [ ! -x "$BIN" ]; then
         cargo build --release
     fi
 fi
+
+# Re-check: a package may have been installed while the build above ran.
+check_no_packaged_install
 
 echo "==> Installing applet binary"
 install -Dm755 "$BIN" /usr/local/bin/cosmic-applet-colortemp
@@ -45,11 +64,10 @@ command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q /usr/sha
 echo "==> Installing sudoers rule (only the 3 exact helper commands, for $APPLET_USER)"
 SUDOERS_FILE=/etc/sudoers.d/drm-colortemp-applet
 TMP=$(mktemp)
-cat > "$TMP" <<EOF
-# Allow $APPLET_USER to trigger drm-colortemp's VT-switch helper without a
-# password. Installed by cosmic-applet-colortemp. Remove with uninstall.sh.
-$APPLET_USER ALL=(root) NOPASSWD: /usr/local/bin/drm-colortemp-apply auto, /usr/local/bin/drm-colortemp-apply night, /usr/local/bin/drm-colortemp-apply day
-EOF
+# Same template the .deb and AUR packages use; they substitute a %group instead
+# of a username, and /usr/bin instead of /usr/local/bin.
+sed -e "s|@PRINCIPAL@|$APPLET_USER|g" -e 's|@BINDIR@|/usr/local/bin|g' \
+    data/drm-colortemp-applet.sudoers.in > "$TMP"
 visudo -cf "$TMP" >/dev/null   # validate before installing
 install -m 0440 "$TMP" "$SUDOERS_FILE"
 rm -f "$TMP"

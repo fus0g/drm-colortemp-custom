@@ -10,6 +10,58 @@ section heading format strict: `## [X.Y.Z] - YYYY-MM-DD`.
 
 ## [Unreleased]
 
+### Added
+- Optional COSMIC panel applet (`applet/`, Rust/libcosmic): one-click
+  Auto / Night / Day from the panel, driving the existing VT-switch
+  workaround through a root helper restricted by a narrow sudoers
+  NOPASSWD rule (#16).
+- The applet is now built and shipped by the release pipeline as its own
+  binary package, so it no longer requires a from-source build:
+  - `.deb`: `drm-colortemp-cosmic-applet_<ver>_<arch>.deb`, attached to
+    every GitHub release. New `make applet-deb` target; `make debs`
+    builds both packages. Library dependencies are computed by
+    `scripts/applet-deb-deps.sh`: `DT_NEEDED` sonames are resolved to
+    absolute paths via `ldd` and attributed with `dpkg -S`, so a
+    libcosmic bump is picked up automatically, then unioned
+    (deduplicated) with the libraries libcosmic/winit `dlopen()`, which
+    carry no `DT_NEEDED` entry and cannot be derived. Path lookup handles
+    merged-`/usr` systems, where `ldd` reports `/lib/...` but dpkg only
+    records the `/usr/lib/...` name. Any `DT_NEEDED` entry that cannot be
+    resolved or attributed invalidates the whole derivation rather than
+    yielding a partial `Depends:` that would install cleanly and fail at
+    runtime. `REQUIRE_DERIVED=1` (set by CI) makes the static fallback a
+    hard error, so a broken derivation cannot masquerade as a passing
+    build. The applet renders via
+    tiny-skia/softbuffer, so it needs no Vulkan or GL runtime.
+  - AUR: `packaging/aur/PKGBUILD-cosmic-applet` (release tarball) and
+    `PKGBUILD-cosmic-applet-git` (tracks `main`), publishing
+    `cosmic-applet-colortemp` / `-git`.
+  - Kept separate from the `drm-colortemp` package on purpose: the
+    headless daemon should not inherit libcosmic's wayland / xkbcommon /
+    X11 runtime dependencies.
+- `.github/workflows/applet.yml`: applet build, clippy, and
+  `.deb` content assertions, triggered only on `applet/**` and `Makefile`
+  changes so the main Build workflow stays fast.
+
+### Changed
+- The sudoers rule is generated from a single template,
+  `applet/data/drm-colortemp-applet.sudoers.in`, shared by `install.sh`,
+  the `.deb`, and the AUR PKGBUILDs. Packages cannot know which user runs
+  the panel, so they authorize a group (`%sudo` on Debian/Ubuntu,
+  `%wheel` on Arch); `install.sh` still authorizes the invoking user only.
+- The applet resolves the root helper at runtime, preferring
+  `/usr/local/bin/drm-colortemp-apply` (source install) over
+  `/usr/bin/drm-colortemp-apply` (packaged), so one binary serves either
+  layout. The two layouts are **mutually exclusive**: they share
+  `/etc/sudoers.d/drm-colortemp-applet` but authorize different helper
+  paths, so mixing them yields sudo denials. `install.sh` and the
+  package's `preinst` each refuse to install over the other.
+- `make deb` and `make legacy-deb` no longer wipe all of `build-deb/`,
+  only their own staging directory, so the daemon and applet packages can
+  be built side by side.
+- Release tarballs now include `applet/`, which the AUR applet PKGBUILDs
+  build from.
+
 ## [2.0.1] - 2026-05-21
 
 ### Fixed
