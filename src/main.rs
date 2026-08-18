@@ -17,20 +17,20 @@ use nix::unistd::geteuid;
 use std::process::ExitCode;
 
 const DEFAULT_DEVICE: &str = "/dev/dri/card1";
-const DEFAULT_DAEMON_CONFIG: &str = "/etc/default/drm-colortemp.conf";
+const DEFAULT_DAEMON_CONFIG: &str = "/etc/default/drm-custom-colorfix.conf";
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "drm-colortemp",
+    name = "drm-custom-colorfix",
     author,
     version,
-    about = "Adjust DRM color temperature",
+    about = "Adjust DRM color temperature and display calibration",
     long_about = "A tool for adjusting screen color temperature via DRM (Direct Rendering Manager).\n\n\
-    Examples:\n  drm-colortemp -t 6500           # Set temperature to 6500K\n  \
-    drm-colortemp -t 3500 -b 0.8    # Warm temperature, 80% brightness\n  \
-    drm-colortemp -l                # List available displays\n  \
-    drm-colortemp -r                # Reset to defaults\n  \
-    drm-colortemp --daemon -c /etc/default/drm-colortemp.conf"
+    Examples:\n  drm-custom-colorfix -t 8200           # Set temperature to 8200K\n  \
+    drm-custom-colorfix -t 3500 -b 0.8    # Warm temperature, 80% brightness\n  \
+    drm-custom-colorfix -l                # List available displays\n  \
+    drm-custom-colorfix -r                # Reset to defaults\n  \
+    drm-custom-colorfix --daemon -c /etc/default/drm-custom-colorfix.conf"
 )]
 struct Args {
     /// Color temperature in Kelvin (1000-10000)
@@ -61,6 +61,10 @@ struct Args {
     #[arg(short = 'c', long, default_value = DEFAULT_DAEMON_CONFIG)]
     config: String,
 
+    /// Apply temperature once from config and exit (for boot/startup)
+    #[arg(short = 'a', long)]
+    apply: bool,
+
     /// Verbose output
     #[arg(short = 'v', long)]
     verbose: bool,
@@ -69,6 +73,18 @@ struct Args {
 fn main() -> ExitCode {
     let args = Args::parse();
     init_logging(args.verbose);
+
+    if args.apply {
+        info!("Applying temperature once from config: {}", args.config);
+        return match daemon::apply_from_config(&args.config) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                error!("Apply from config failed: {e}");
+                eprintln!("Error: {e}");
+                ExitCode::from(1)
+            }
+        };
+    }
 
     if args.daemon {
         if !geteuid().is_root() {

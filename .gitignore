@@ -35,12 +35,10 @@ test_*
 
 /target
 
-# Debian package build dir
+# Package build dirs
 build-deb/
+build-rpm/
 
 # Agent / IDE assistant local caches
 .claude/
 .hermes/
-
-# Applet build artifacts
-applet/target/

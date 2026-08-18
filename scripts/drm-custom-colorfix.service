@@ -1,12 +1,13 @@
 [Unit]
-Description=DRM Color Temperature Daemon
-Documentation=https://github.com/jjo/drm-colortemp
-After=display-manager.service
-Wants=display-manager.service
+Description=DRM Custom Colorfix Daemon & Boot Service
+Documentation=https://github.com/fus0g/drm-colortemp-custom
+Before=display-manager.service cosmic-greeter.service
+After=systemd-udev-settle.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/drm-colortemp --daemon
+ExecStartPre=-/usr/bin/drm-custom-colorfix --apply -c /etc/default/drm-custom-colorfix.conf
+ExecStart=/usr/bin/drm-custom-colorfix --daemon -c /etc/default/drm-custom-colorfix.conf
 Restart=on-failure
 RestartSec=5s
 Environment=RUST_LOG=info
@@ -15,9 +16,7 @@ Environment=RUST_LOG=info
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-# Daemon only reads the config; ProtectSystem=strict already keeps /etc read-only.
-# Path matches `src/main.rs: DEFAULT_DAEMON_CONFIG` and the .deb conffile.
-ReadOnlyPaths=/etc/default/drm-colortemp.conf
+ReadOnlyPaths=/etc/default/drm-custom-colorfix.conf
 PrivateTmp=true
 
 # Allow all DRM devices. Hard-coding card0 breaks on machines where the

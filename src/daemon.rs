@@ -133,7 +133,7 @@ fn apply_temperature(config: &Config, temp: u32) -> Result<(), &'static str> {
 }
 
 pub fn run(config_path: &str) -> Result<(), DaemonError> {
-    info!("Starting drm-colortemp daemon");
+    info!("Starting drm-custom-colorfix daemon");
     info!("Config file: {config_path}");
 
     install_signal_handlers()?;
@@ -247,6 +247,15 @@ fn choose_target_temp(config: &Config, active_vt: Option<i32>) -> u32 {
         scheduled
     }
 }
+
+/// Apply the scheduled temperature once from configuration and exit immediately (used at early boot).
+pub fn apply_from_config(config_path: &str) -> Result<(), String> {
+    let config = load_config(config_path).map_err(|e| e.to_string())?;
+    let target_temp = choose_target_temp(&config, None);
+    info!("Applying {}K from config {}", target_temp, config_path);
+    apply_temperature(&config, target_temp).map_err(|e| e.to_string())
+}
+
 
 fn config_parent(p: &Path) -> PathBuf {
     p.parent()
