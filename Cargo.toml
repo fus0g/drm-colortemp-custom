@@ -23,9 +23,6 @@ libc = "0.2"
 nix = { version = "0.27", features = ["signal", "fs", "ioctl", "poll", "process", "user"] }
 inotify = "0.10"
 
-# Local time conversion for time-based scheduling
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
-
 [dev-dependencies]
 tempfile = "3.9"
 

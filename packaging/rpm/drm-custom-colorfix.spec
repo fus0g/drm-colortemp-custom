@@ -1,6 +1,6 @@
 Name:           drm-custom-colorfix
 Version:        2.1.0
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        Screen color temperature and display calibration via DRM for COSMIC desktop
 
 License:        GPL-3.0-or-later

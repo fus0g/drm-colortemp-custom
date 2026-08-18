@@ -7,7 +7,6 @@ mod config;
 mod daemon;
 mod device;
 mod drm;
-mod schedule;
 mod temperature;
 mod vt;
 

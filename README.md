@@ -1,84 +1,61 @@
 # drm-custom-colorfix
 
-A minimal, fast, and standalone DRM color temperature and display calibration utility for Linux Wayland compositors (specifically **COSMIC Desktop Environment** / `cosmic-comp`), designed to correct screen color balance, fix warm/yellowish tints on replacement laptop panels, and control display color temperature.
+A minimal, fast, and standalone DRM color temperature and display calibration utility for Linux Wayland compositors (specifically **COSMIC Desktop Environment** / `cosmic-comp`), designed to correct screen color balance, fix warm/yellowish tints on replacement laptop panels, and maintain a constant, calibrated display white-point.
 
-> **Attribution:** This project is a streamlined fork of the original [jjo/drm-colortemp](https://github.com/jjo/drm-colortemp). It has been stripped of unnecessary extras (legacy C codebase, desktop notifications, separate applets) to provide a focused, single-binary Rust tool, enhanced with **early-boot automatic calibration** and **Fedora RPM packaging**.
-
----
-
-## The Problem
-
-COSMIC Desktop Environment does not yet implement native color management or the `wlr-gamma-control-unstable-v1` Wayland protocol ([cosmic-comp #2059](https://github.com/pop-os/cosmic-comp/issues/2059)), which prevents traditional tools like `gammastep`, `wlsunset`, or Redshift from adjusting display colors.
-
-Furthermore, replacement laptop screens often come with an overly warm, yellowish, or off-white native white point (~5800K–6200K) that requires software-level color correction (e.g. setting target temperature to 7500K–8200K).
+> **Attribution:** This project is a streamlined fork of [jjo/drm-colortemp](https://github.com/jjo/drm-colortemp). It has been stripped of all unnecessary complexity (legacy C codebase, day/night schedules, solar calculators, desktop notifications, separate applets) to provide a focused, single-binary Rust tool with **automatic background boot-time calibration** and **Fedora RPM packaging**.
 
 ---
 
-## The Solution: How `drm-custom-colorfix` Works
+## How It Works
 
-`drm-custom-colorfix` manipulates the display hardware's gamma Look-Up Tables (LUTs) directly at the Linux kernel DRM (Direct Rendering Manager) layer:
+1. **Automatic Background Calibration (`AUTO_ACTIVATE=1`)**:
+   - When your system starts or you log in, `drm-custom-colorfix` ensures your configured display temperature is applied.
+   - If the Wayland compositor holds a lock on the active virtual terminal (VT), the daemon performs a background 0.05s micro-bounce (`VT 1 -> VT 2 -> VT 1`) to program the GPU hardware gamma curves directly.
+   - Zero key combinations or manual intervention needed.
 
-1. **Automatic Early-Boot Application (Zero Keypresses Needed)**:
-   - A systemd service runs `drm-custom-colorfix --apply` *before* the display manager (`cosmic-greeter`) and compositor (`cosmic-comp`) start.
-   - The hardware gamma table is programmed into the GPU (Intel Iris Xe / NVIDIA) before any compositor locks it.
-   - When COSMIC starts, it renders over the hardware-calibrated display directly.
-
-2. **On-Demand TTY Switching (Mid-Session Adjustments)**:
-   - When running inside an active COSMIC session, the background daemon monitors Virtual Terminal (VT) switches.
-   - Pressing **`Ctrl` + `Alt` + `F3`** (TTY3) causes COSMIC to temporarily release the DRM hardware lock.
-   - The daemon immediately writes the new gamma curves and returns seamlessly to COSMIC (**`Ctrl` + `Alt` + `F2`**).
+2. **Live Reload**:
+   - Whenever `/etc/default/drm-custom-colorfix.conf` is edited, changes apply immediately via inotify.
 
 ---
 
-## Features
+## Configuration (`/etc/default/drm-custom-colorfix.conf`)
 
-- **Lightweight & Pure Rust**: Uses direct DRM ioctls via libc/FFI with zero complex dependencies.
-- **Automatic Boot Calibration**: Applies your configured Kelvin color temperature before the graphical desktop launches.
-- **Multi-GPU Support**: Works with integrated Intel GPUs (`/dev/dri/card1`), discrete NVIDIA GPUs (`/dev/dri/card0`), and external HDMI/DisplayPort monitors.
-- **Config Live Reload**: Automatically reloads settings via inotify whenever `/etc/default/drm-custom-colorfix.conf` is edited.
-- **Fedora RPM Packaging**: One-command RPM builds with `make rpm`.
+The configuration is minimal and straightforward:
+
+```ini
+# /etc/default/drm-custom-colorfix.conf
+
+# Target color temperature in Kelvin (1000-10000). Default: 8000
+TEMPERATURE=8000
+
+# Brightness multiplier (0.1 - 1.0). Default: 1.0
+BRIGHTNESS=1.0
+
+# Automatic VT micro-switch on boot/session start (1 = enabled, 0 = disabled)
+AUTO_ACTIVATE=1
+
+# DRM device to calibrate (leave commented out to auto-detect all connected GPUs)
+# DEVICE="/dev/dri/card1"
+```
 
 ---
 
-## Quick Start (Fedora / RHEL / CentOS)
+## Quick Start (Fedora / RHEL)
 
-### 1. Build and Install the RPM Package
+### 1. Build and Install RPM
 
 ```bash
-# Build the binary and RPM
+# Build RPM
 make rpm
 
-# Install the generated RPM
-sudo dnf install ./build-rpm/RPMS/x86_64/drm-custom-colorfix-2.1.0-1.fc44.x86_64.rpm
+# Install or upgrade package
+sudo dnf install ./build-rpm/RPMS/x86_64/drm-custom-colorfix-2.1.0-2.fc44.x86_64.rpm
 ```
 
-### 2. Configure Your Target Color Temperature
-
-Edit `/etc/default/drm-custom-colorfix.conf`:
+### 2. Copy Configuration & Start Service
 
 ```bash
-sudo nano /etc/default/drm-custom-colorfix.conf
-```
-
-Set your preferred daytime and nighttime temperatures:
-```ini
-# Auto-detect all active GPUs and displays:
-# (or specify DEVICE="/dev/dri/card1")
-
-# Daytime temperature in Kelvin (default: 8200 to neutralize warm/yellowish screens)
-DAY_TEMP=8200
-
-# Nighttime temperature in Kelvin
-NIGHT_TEMP=8200
-
-# Schedule
-SUNSET_HOUR=20
-SUNRISE_HOUR=8
-```
-
-### 3. Enable and Start the Background Service
-
-```bash
+sudo cp ./drm-custom-colorfix.conf /etc/default/drm-custom-colorfix.conf
 sudo systemctl enable --now drm-custom-colorfix
 ```
 
@@ -86,56 +63,18 @@ sudo systemctl enable --now drm-custom-colorfix
 
 ## CLI Usage
 
-You can also run the tool manually from the command line or from a TTY:
-
 ```bash
-# List all detected DRM devices, CRTCs, and connectors
+# Set temperature to 8000K manually
+sudo drm-custom-colorfix -t 8000
+
+# Set temperature with 85% brightness
+sudo drm-custom-colorfix -t 8000 -b 0.85
+
+# List detected DRM cards and displays
 drm-custom-colorfix -l
 
-# Set temperature to 8200K on default device
-sudo drm-custom-colorfix -t 8200
-
-# Set temperature with brightness multiplier (80% brightness)
-sudo drm-custom-colorfix -t 8200 -b 0.8
-
-# Specify a particular GPU (e.g. NVIDIA or Intel)
-sudo drm-custom-colorfix -d /dev/dri/card1 -t 8200
-
-# Apply scheduled temperature once from configuration and exit
-sudo drm-custom-colorfix --apply -c /etc/default/drm-custom-colorfix.conf
-
-# Reset to default 6500K neutral daylight
+# Reset to default 6500K neutral white
 sudo drm-custom-colorfix -r
-```
-
----
-
-## TTY Shortcuts (For Mid-Session Adjustments)
-
-| Shortcut | Description |
-| :--- | :--- |
-| **`Ctrl` + `Alt` + `F3` $\rightarrow$ `F2`** | Apply scheduled temperature (`DAY_TEMP` or `NIGHT_TEMP`) |
-| **`Ctrl` + `Alt` + `F4` $\rightarrow$ `F2`** | Force night temperature (`NIGHT_TEMP`) |
-| **`Ctrl` + `Alt` + `F5` $\rightarrow$ `F2`** | Force day temperature (`DAY_TEMP`) |
-
----
-
-## Build from Source
-
-Requirements: `rust` / `cargo`, `gcc`, `make`, `systemd-rpm-macros`, `rpm-build`.
-
-```bash
-# Build release binary
-make build
-
-# Run test suite
-make test
-
-# Build RPM package
-make rpm
-
-# Install locally without RPM
-sudo make install
 ```
 
 ---

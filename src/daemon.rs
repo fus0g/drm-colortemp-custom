@@ -1,16 +1,14 @@
-//! Daemon mode: VT-aware time-driven gamma adjustment with inotify config reload.
+//! Daemon mode: Inotify config reload and auto-activation service.
 
 use crate::config::{load_config, Config};
 use crate::device;
 use crate::drm;
-use crate::schedule;
 use crate::temperature;
 use crate::vt;
 use inotify::{EventMask, Inotify, WatchMask};
 use log::{debug, error, info, warn};
 use nix::poll::{poll, PollFd, PollFlags};
-use nix::sys::signal::{self, SigAction, SigHandler, SigSet, Signal};
-use nix::sys::signal::SaFlags;
+use nix::sys::signal::{self, SaFlags, SigAction, SigHandler, SigSet, Signal};
 use std::os::fd::{AsRawFd, BorrowedFd};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -56,9 +54,7 @@ fn install_signal_handlers() -> Result<(), DaemonError> {
     Ok(())
 }
 
-/// Apply a temperature to every CRTC reachable from the configured devices,
-/// honoring the connector filter and gamma-size override. Returns Ok(()) if
-/// at least one CRTC was successfully updated.
+/// Apply a temperature and brightness to every CRTC reachable from the configured devices.
 fn apply_temperature(config: &Config, temp: u32) -> Result<(), &'static str> {
     let mut any_success = false;
 
@@ -70,9 +66,6 @@ fn apply_temperature(config: &Config, temp: u32) -> Result<(), &'static str> {
                 continue;
             }
         };
-        // Don't grab SET_MASTER. C daemon doesn't; SETGAMMA works as long as
-        // the compositor has released the master (e.g. on TTY switch) or we
-        // hold raw rw access to the right card.
 
         let res = match drm::get_resources(dev.fd()) {
             Ok(r) => r,
@@ -106,13 +99,12 @@ fn apply_temperature(config: &Config, temp: u32) -> Result<(), &'static str> {
                 );
                 continue;
             }
-            // Config can override the hardware-reported size; 0 keeps it.
             let effective_size = if config.gamma_size > 0 {
                 config.gamma_size as usize
             } else {
                 info.gamma_size as usize
             };
-            let (r, g, b) = temperature::generate_gamma_luts(effective_size, temp, 1.0);
+            let (r, g, b) = temperature::generate_gamma_luts(effective_size, temp, config.brightness);
             match drm::set_gamma(dev.fd(), crtc_id, &r, &g, &b) {
                 Ok(()) => {
                     any_success = true;
@@ -150,13 +142,11 @@ pub fn run(config_path: &str) -> Result<(), DaemonError> {
     let mut last_check = Instant::now() - check_interval;
     let mut last_applied_temp: Option<u32> = None;
     let mut prev_vt: Option<Option<i32>> = None;
-    // Backoff when SET_GAMMA keeps failing (compositor owns DRM master).
-    // Reset on success or VT change.
     let failure_backoff = Duration::from_secs(30);
     let mut last_failure: Option<Instant> = None;
 
     while !STOP_REQUESTED.load(Ordering::Relaxed) {
-        // SIGHUP → explicit reload.
+        // SIGHUP -> explicit reload.
         if RELOAD_REQUESTED.swap(false, Ordering::Relaxed) {
             info!("SIGHUP received, reloading config");
             match load_config(config_path) {
@@ -171,8 +161,7 @@ pub fn run(config_path: &str) -> Result<(), DaemonError> {
         // Inotify events on the parent dir; reload when our file is touched.
         if let Some(inot) = inotify.as_mut() {
             if drain_inotify(inot, &basename, &inotify_buf) {
-                info!("Config file changed");
-                // Brief settle delay matches the C version (vim/nano rename race).
+                info!("Config file changed, reloading");
                 std::thread::sleep(Duration::from_millis(100));
                 match load_config(config_path) {
                     Ok(c) => {
@@ -184,10 +173,9 @@ pub fn run(config_path: &str) -> Result<(), DaemonError> {
             }
         }
 
-        // Pick the target temperature: VT override beats time-of-day.
         let now = Instant::now();
         let active_vt = vt::active_vt();
-        let target_temp = choose_target_temp(&config, active_vt);
+        let target_temp = config.temperature;
 
         let vt_changed = prev_vt != Some(active_vt);
         if vt_changed {
@@ -195,8 +183,6 @@ pub fn run(config_path: &str) -> Result<(), DaemonError> {
                 debug!("VT changed: {prev:?} -> {active_vt:?}");
             }
             prev_vt = Some(active_vt);
-            // VT switch is the canonical recovery point (compositor may have
-            // released master). Clear backoff so the next attempt fires now.
             last_failure = None;
         }
 
@@ -206,6 +192,7 @@ pub fn run(config_path: &str) -> Result<(), DaemonError> {
         let should_apply = last_applied_temp != Some(target_temp)
             && now.duration_since(last_check) >= Duration::from_millis(200)
             && backoff_ok;
+
         if should_apply {
             info!("Applying {target_temp}K (VT={:?})", active_vt);
             match apply_temperature(&config, target_temp) {
@@ -251,25 +238,10 @@ pub fn run(config_path: &str) -> Result<(), DaemonError> {
     Ok(())
 }
 
-fn choose_target_temp(config: &Config, active_vt: Option<i32>) -> u32 {
-    let scheduled = schedule::current_temperature(config);
-    let Some(vt_num) = active_vt else {
-        return scheduled;
-    };
-    if vt_num == config.warm_tty {
-        config.night_temp
-    } else if vt_num == config.cool_tty {
-        config.day_temp
-    } else {
-        // monitor_tty and any other VT both fall back to the time-based value.
-        scheduled
-    }
-}
-
-/// Apply the scheduled temperature once from configuration and exit immediately (used at early boot).
+/// Apply the target temperature once from configuration and exit immediately.
 pub fn apply_from_config(config_path: &str) -> Result<(), String> {
     let config = load_config(config_path).map_err(|e| e.to_string())?;
-    let target_temp = choose_target_temp(&config, None);
+    let target_temp = config.temperature;
     info!("Applying {}K from config {}", target_temp, config_path);
     if let Ok(()) = apply_temperature(&config, target_temp) {
         return Ok(());
@@ -288,7 +260,6 @@ pub fn apply_from_config(config_path: &str) -> Result<(), String> {
     }
     apply_temperature(&config, target_temp).map_err(|e| e.to_string())
 }
-
 
 fn config_parent(p: &Path) -> PathBuf {
     p.parent()
@@ -311,7 +282,6 @@ fn setup_inotify(parent: &Path) -> Option<Inotify> {
             return None;
         }
     };
-    // Watch the parent directory so atomic editor renames (vim/nano) keep working.
     let mask = WatchMask::CREATE | WatchMask::MOVED_TO | WatchMask::MODIFY | WatchMask::CLOSE_WRITE;
     if let Err(e) = inot.watches().add(parent, mask) {
         warn!(
@@ -325,7 +295,6 @@ fn setup_inotify(parent: &Path) -> Option<Inotify> {
 }
 
 fn drain_inotify(inotify: &mut Inotify, basename: &str, _buf: &[u8]) -> bool {
-    // Allocate a fresh buffer per call — Inotify::read_events needs &mut [u8].
     let mut buffer = [0u8; 4096];
     let mut matched = false;
     loop {
@@ -358,7 +327,6 @@ fn drain_inotify(inotify: &mut Inotify, basename: &str, _buf: &[u8]) -> bool {
 
 fn wait_for_event(inotify_fd: Option<i32>, timeout: Duration) {
     let Some(fd) = inotify_fd else {
-        // No inotify; sleep is the only knob we have.
         std::thread::sleep(timeout);
         return;
     };
@@ -367,19 +335,11 @@ fn wait_for_event(inotify_fd: Option<i32>, timeout: Duration) {
     let ms = timeout
         .as_millis()
         .min(i32::MAX as u128) as i32;
-    // EINTR (e.g. from SIGHUP/SIGTERM) is expected and silently breaks the wait.
     let _ = poll(&mut fds, ms);
 }
 
 fn log_startup(c: &Config) {
-    info!(
-        "Day: {}K  Night: {}K  Sunset: {:02}:00  Sunrise: {:02}:00",
-        c.day_temp, c.night_temp, c.sunset_hour, c.sunrise_hour
-    );
-    info!(
-        "Monitor TTY {} (auto), Warm TTY {} (night), Cool TTY {} (day)",
-        c.monitor_tty, c.warm_tty, c.cool_tty
-    );
+    info!("Target Temperature: {}K, Brightness: {:.2}", c.temperature, c.brightness);
     if !c.connector.is_empty() {
         info!("Connector filter: {}", c.connector);
     }
@@ -393,46 +353,15 @@ fn log_startup(c: &Config) {
 mod tests {
     use super::*;
 
-    fn cfg() -> Config {
-        Config {
-            day_temp: 6500,
-            night_temp: 3500,
-            monitor_tty: 3,
-            warm_tty: 4,
-            cool_tty: 5,
-            sunset_hour: 20,
-            sunrise_hour: 8,
-            ..Config::default()
-        }
-    }
-
-    #[test]
-    fn test_choose_target_vt_overrides() {
-        let c = cfg();
-        assert_eq!(choose_target_temp(&c, Some(4)), c.night_temp);
-        assert_eq!(choose_target_temp(&c, Some(5)), c.day_temp);
-    }
-
-    #[test]
-    fn test_choose_target_falls_through_to_schedule() {
-        let c = cfg();
-        // monitor_tty / unknown / no-vt: result is whatever the schedule picks.
-        let v = choose_target_temp(&c, Some(3));
-        assert!(v == c.day_temp || v == c.night_temp);
-        let v = choose_target_temp(&c, None);
-        assert!(v == c.day_temp || v == c.night_temp);
-    }
-
     #[test]
     fn test_config_parent_handles_no_dir() {
-        // file with no directory part should resolve to "."
         let p = config_parent(Path::new("foo.conf"));
         assert_eq!(p, PathBuf::from("."));
     }
 
     #[test]
     fn test_config_basename() {
-        assert_eq!(config_basename(Path::new("/etc/drm-colortemp.conf")), "drm-colortemp.conf");
+        assert_eq!(config_basename(Path::new("/etc/drm-custom-colorfix.conf")), "drm-custom-colorfix.conf");
         assert_eq!(config_basename(Path::new("foo.conf")), "foo.conf");
     }
 }

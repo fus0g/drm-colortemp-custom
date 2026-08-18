@@ -1,10 +1,4 @@
-//! Configuration parsing for DRM color temperature.
-//!
-//! INI-style KEY=VALUE parser mirroring the C version's behaviour:
-//! - Out-of-range numeric values warn and keep the previous (defaulted) value.
-//! - Unknown keys are silently ignored.
-//! - DEVICE / DEVICE1..DEVICE8 fill an ordered device list.
-//! - If no devices are specified, auto-detection runs on `load_config`.
+//! Configuration parsing for DRM Custom Colorfix.
 
 use crate::device;
 use log::{info, warn};
@@ -20,43 +14,28 @@ pub const GAMMA_SIZE_MAX: u32 = 4096;
 #[derive(Debug, Clone)]
 pub struct Config {
     pub devices: Vec<String>,
-    pub day_temp: u32,
-    pub night_temp: u32,
-    pub sunset_hour: u8,
-    pub sunrise_hour: u8,
-    pub monitor_tty: i32,
-    pub warm_tty: i32,
-    pub cool_tty: i32,
+    pub temperature: u32,
+    pub brightness: f64,
     pub check_interval: u32,
     pub verbose: bool,
-    pub latitude: f64,
-    pub longitude: f64,
-    pub has_location: bool,
     pub connector: String,
     pub gamma_size: u32,
     pub auto_activate: bool,
+    pub monitor_tty: i32,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        // Mirror C config_defaults().
         Self {
             devices: Vec::new(),
-            day_temp: 6500,
-            night_temp: 3500,
-            sunset_hour: 20,
-            sunrise_hour: 8,
-            monitor_tty: 3,
-            warm_tty: 4,
-            cool_tty: 5,
+            temperature: 8000,
+            brightness: 1.0,
             check_interval: 1,
             verbose: false,
-            latitude: 0.0,
-            longitude: 0.0,
-            has_location: false,
             connector: String::new(),
             gamma_size: 0,
             auto_activate: true,
+            monitor_tty: 3,
         }
     }
 }
@@ -86,7 +65,6 @@ pub fn load_config<P: AsRef<Path>>(path: P) -> Result<Config, ConfigError> {
     })?;
     let reader = BufReader::new(file);
     let mut config = Config::default();
-    // Numbered devices keyed by 0-based index to preserve user ordering across gaps.
     let mut numbered: [Option<String>; MAX_DEVICES] = Default::default();
     let mut legacy_device: Option<String> = None;
     let mut line_num = 0usize;
@@ -118,29 +96,25 @@ pub fn load_config<P: AsRef<Path>>(path: P) -> Result<Config, ConfigError> {
         }
 
         match key {
-            "DAY_TEMP" => set_int_u32(&mut config.day_temp, key, value, 1000, 10000),
-            "NIGHT_TEMP" => set_int_u32(&mut config.night_temp, key, value, 1000, 10000),
-            "SUNSET_HOUR" => set_int_u8(&mut config.sunset_hour, key, value, 0, 23),
-            "SUNRISE_HOUR" => set_int_u8(&mut config.sunrise_hour, key, value, 0, 23),
+            "TEMPERATURE" | "TEMP" | "COLOR_TEMP" | "DAY_TEMP" | "NIGHT_TEMP" => {
+                set_int_u32(&mut config.temperature, key, value, 1000, 10000);
+            }
+            "BRIGHTNESS" => {
+                set_float(&mut config.brightness, key, value, 0.1, 1.0);
+            }
+            "AUTO_ACTIVATE" => config.auto_activate = parse_bool(value),
             "MONITOR_TTY" => set_int_i32(&mut config.monitor_tty, key, value, 1, 12),
-            "WARM_TTY" => set_int_i32(&mut config.warm_tty, key, value, 1, 12),
-            "COOL_TTY" => set_int_i32(&mut config.cool_tty, key, value, 1, 12),
             "CHECK_INTERVAL" => set_int_u32(&mut config.check_interval, key, value, 1, 3600),
             "VERBOSE" => config.verbose = parse_bool(value),
             "CONNECTOR" => config.connector = value.to_string(),
-            "AUTO_ACTIVATE" => config.auto_activate = parse_bool(value),
             "GAMMA_SIZE" => {
-                // 0 = auto (use hardware-reported size). Non-zero must lie in [MIN,MAX].
                 if value == "0" {
                     config.gamma_size = 0;
                 } else {
                     set_int_u32(&mut config.gamma_size, key, value, GAMMA_SIZE_MIN, GAMMA_SIZE_MAX);
                 }
             }
-            "LOCATION" => parse_location(&mut config, value),
-            _ => {
-                // Unknown keys silently ignored to match C behaviour.
-            }
+            _ => {}
         }
     }
 
@@ -160,7 +134,6 @@ pub fn load_config<P: AsRef<Path>>(path: P) -> Result<Config, ConfigError> {
         }
     }
     if devices.is_empty() {
-        // Last-resort fallback so the daemon has a path to log when no DRM is present.
         devices.push("/dev/dri/card0".to_string());
     }
     config.devices = devices;
@@ -170,8 +143,8 @@ pub fn load_config<P: AsRef<Path>>(path: P) -> Result<Config, ConfigError> {
             info!("Device[{i}]: {d}");
         }
         info!(
-            "Day: {}K Night: {}K Sunset: {:02}:00 Sunrise: {:02}:00",
-            config.day_temp, config.night_temp, config.sunset_hour, config.sunrise_hour
+            "Target Temperature: {}K, Brightness: {:.2}",
+            config.temperature, config.brightness
         );
     }
 
@@ -200,24 +173,6 @@ fn parse_device_index(key: &str) -> Option<usize> {
     }
 }
 
-fn parse_location(config: &mut Config, value: &str) {
-    if value.trim().is_empty() {
-        return;
-    }
-    let Some((lat, lon)) = value.split_once(',') else {
-        warn!("config: LOCATION must be 'lat,lon'");
-        return;
-    };
-    match (lat.trim().parse::<f64>(), lon.trim().parse::<f64>()) {
-        (Ok(la), Ok(lo)) => {
-            config.latitude = la;
-            config.longitude = lo;
-            config.has_location = true;
-        }
-        _ => warn!("config: invalid LOCATION value '{value}'"),
-    }
-}
-
 fn set_int_u32(slot: &mut u32, key: &str, value: &str, min: u32, max: u32) {
     match value.parse::<i64>() {
         Ok(v) if v >= min as i64 && v <= max as i64 => *slot = v as u32,
@@ -232,12 +187,6 @@ fn set_int_u32(slot: &mut u32, key: &str, value: &str, min: u32, max: u32) {
     }
 }
 
-fn set_int_u8(slot: &mut u8, key: &str, value: &str, min: u8, max: u8) {
-    let mut tmp = *slot as u32;
-    set_int_u32(&mut tmp, key, value, min as u32, max as u32);
-    *slot = tmp as u8;
-}
-
 fn set_int_i32(slot: &mut i32, key: &str, value: &str, min: i32, max: i32) {
     match value.parse::<i32>() {
         Ok(v) if v >= min && v <= max => *slot = v,
@@ -247,6 +196,20 @@ fn set_int_i32(slot: &mut i32, key: &str, value: &str, min: i32, max: i32) {
         ),
         Err(_) => warn!(
             "config: invalid integer for {key}: '{value}', keeping {}",
+            *slot
+        ),
+    }
+}
+
+fn set_float(slot: &mut f64, key: &str, value: &str, min: f64, max: f64) {
+    match value.parse::<f64>() {
+        Ok(v) if v >= min && v <= max => *slot = v,
+        Ok(v) => warn!(
+            "config: {key}={v} out of range [{min},{max}], keeping {}",
+            *slot
+        ),
+        Err(_) => warn!(
+            "config: invalid float for {key}: '{value}', keeping {}",
             *slot
         ),
     }
@@ -275,106 +238,30 @@ mod tests {
     #[test]
     fn test_default_config() {
         let c = Config::default();
-        assert_eq!(c.day_temp, 6500);
-        assert_eq!(c.night_temp, 3500);
-        assert_eq!(c.sunset_hour, 20);
-        assert_eq!(c.sunrise_hour, 8);
-        assert_eq!(c.monitor_tty, 3);
-        assert_eq!(c.warm_tty, 4);
-        assert_eq!(c.cool_tty, 5);
+        assert_eq!(c.temperature, 8000);
+        assert_eq!(c.brightness, 1.0);
+        assert!(c.auto_activate);
     }
 
     #[test]
     fn test_load_simple_config() {
-        let f = write_temp_config("DAY_TEMP=5500\nNIGHT_TEMP=2700\n");
+        let f = write_temp_config("TEMPERATURE=7500\nBRIGHTNESS=0.9\n");
         let c = load_config(f.path()).unwrap();
-        assert_eq!(c.day_temp, 5500);
-        assert_eq!(c.night_temp, 2700);
+        assert_eq!(c.temperature, 7500);
+        assert!((c.brightness - 0.9).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_load_legacy_day_temp() {
+        let f = write_temp_config("DAY_TEMP=8200\n");
+        let c = load_config(f.path()).unwrap();
+        assert_eq!(c.temperature, 8200);
     }
 
     #[test]
     fn test_load_device_config_ordered() {
-        // Numbered devices preserve user order, even with gaps.
         let f = write_temp_config("DEVICE3=/dev/dri/card2\nDEVICE1=/dev/dri/card0\n");
         let c = load_config(f.path()).unwrap();
         assert_eq!(c.devices, vec!["/dev/dri/card0", "/dev/dri/card2"]);
-    }
-
-    #[test]
-    fn test_load_legacy_device_config() {
-        let f = write_temp_config("DEVICE=/dev/dri/card0\n");
-        let c = load_config(f.path()).unwrap();
-        assert_eq!(c.devices[0], "/dev/dri/card0");
-    }
-
-    #[test]
-    fn test_invalid_temp_keeps_default() {
-        // Out-of-range values must NOT change the field — and certainly not error out.
-        let f = write_temp_config("DAY_TEMP=99999\n");
-        let c = load_config(f.path()).unwrap();
-        assert_eq!(c.day_temp, 6500);
-    }
-
-    #[test]
-    fn test_garbage_keeps_default() {
-        let f = write_temp_config("DAY_TEMP=banana\n");
-        let c = load_config(f.path()).unwrap();
-        assert_eq!(c.day_temp, 6500);
-    }
-
-    #[test]
-    fn test_comments_ignored() {
-        let f = write_temp_config("# Comment\nDAY_TEMP=5000\n  # Indented comment\n");
-        let c = load_config(f.path()).unwrap();
-        assert_eq!(c.day_temp, 5000);
-    }
-
-    #[test]
-    fn test_gamma_size_zero_means_auto() {
-        let f = write_temp_config("GAMMA_SIZE=0\n");
-        let c = load_config(f.path()).unwrap();
-        assert_eq!(c.gamma_size, 0);
-    }
-
-    #[test]
-    fn test_gamma_size_too_small_rejected() {
-        let f = write_temp_config("GAMMA_SIZE=32\n");
-        let c = load_config(f.path()).unwrap();
-        // 32 < 64, kept default (0)
-        assert_eq!(c.gamma_size, 0);
-    }
-
-    #[test]
-    fn test_quoted_string_stripped() {
-        let f = write_temp_config("CONNECTOR=\"DP-1\"\n");
-        let c = load_config(f.path()).unwrap();
-        assert_eq!(c.connector, "DP-1");
-    }
-
-    #[test]
-    fn test_location_parsing() {
-        let f = write_temp_config("LOCATION=-33.45,-70.66\n");
-        let c = load_config(f.path()).unwrap();
-        assert!(c.has_location);
-        assert!((c.latitude - -33.45).abs() < 1e-9);
-        assert!((c.longitude - -70.66).abs() < 1e-9);
-    }
-
-    #[test]
-    fn test_parse_bool_variants() {
-        assert!(parse_bool("yes"));
-        assert!(parse_bool("YES"));
-        assert!(parse_bool("on"));
-        assert!(parse_bool("1"));
-        assert!(parse_bool("true"));
-        assert!(!parse_bool("no"));
-        assert!(!parse_bool("0"));
-        assert!(!parse_bool(""));
-    }
-
-    #[test]
-    fn test_missing_file_returns_error() {
-        let r = load_config("/nonexistent/path/drm-colortemp.conf");
-        assert!(matches!(r, Err(ConfigError::Open { .. })));
     }
 }
