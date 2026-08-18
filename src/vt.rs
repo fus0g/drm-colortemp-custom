@@ -28,12 +28,37 @@ pub fn active_vt() -> Option<i32> {
 }
 
 fn open_console() -> Option<i32> {
-    for path in &["/dev/console", "/dev/tty0"] {
+    for path in &["/dev/tty0", "/dev/console"] {
         let c = CString::new(*path).ok()?;
-        let fd = unsafe { libc::open(c.as_ptr(), libc::O_RDONLY) };
+        let fd = unsafe { libc::open(c.as_ptr(), libc::O_RDWR) };
         if fd >= 0 {
             return Some(fd);
+        }
+        let fd_ro = unsafe { libc::open(c.as_ptr(), libc::O_RDONLY) };
+        if fd_ro >= 0 {
+            return Some(fd_ro);
         }
     }
     None
 }
+
+/// Switch the active Linux virtual terminal (VT) via VT_ACTIVATE / VT_WAITACTIVE.
+/// Requires root / console access.
+pub fn switch_vt(vt_num: i32) -> Result<(), std::io::Error> {
+    for path in &["/dev/tty0", "/dev/console"] {
+        if let Ok(c) = CString::new(*path) {
+            let fd = unsafe { libc::open(c.as_ptr(), libc::O_RDWR) };
+            if fd >= 0 {
+                // VT_ACTIVATE = 0x5606, VT_WAITACTIVE = 0x5607
+                let r1 = unsafe { libc::ioctl(fd, 0x5606, vt_num as libc::c_long) };
+                let r2 = unsafe { libc::ioctl(fd, 0x5607, vt_num as libc::c_long) };
+                unsafe { libc::close(fd) };
+                if r1 == 0 && r2 == 0 {
+                    return Ok(());
+                }
+            }
+        }
+    }
+    Err(std::io::Error::last_os_error())
+}
+

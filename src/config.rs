@@ -34,6 +34,7 @@ pub struct Config {
     pub has_location: bool,
     pub connector: String,
     pub gamma_size: u32,
+    pub auto_activate: bool,
 }
 
 impl Default for Config {
@@ -55,6 +56,7 @@ impl Default for Config {
             has_location: false,
             connector: String::new(),
             gamma_size: 0,
+            auto_activate: true,
         }
     }
 }
@@ -126,6 +128,7 @@ pub fn load_config<P: AsRef<Path>>(path: P) -> Result<Config, ConfigError> {
             "CHECK_INTERVAL" => set_int_u32(&mut config.check_interval, key, value, 1, 3600),
             "VERBOSE" => config.verbose = parse_bool(value),
             "CONNECTOR" => config.connector = value.to_string(),
+            "AUTO_ACTIVATE" => config.auto_activate = parse_bool(value),
             "GAMMA_SIZE" => {
                 // 0 = auto (use hardware-reported size). Non-zero must lie in [MIN,MAX].
                 if value == "0" {
@@ -198,6 +201,9 @@ fn parse_device_index(key: &str) -> Option<usize> {
 }
 
 fn parse_location(config: &mut Config, value: &str) {
+    if value.trim().is_empty() {
+        return;
+    }
     let Some((lat, lon)) = value.split_once(',') else {
         warn!("config: LOCATION must be 'lat,lon'");
         return;

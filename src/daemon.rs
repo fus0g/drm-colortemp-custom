@@ -210,16 +210,34 @@ pub fn run(config_path: &str) -> Result<(), DaemonError> {
             info!("Applying {target_temp}K (VT={:?})", active_vt);
             match apply_temperature(&config, target_temp) {
                 Ok(()) => {
+                    info!("Successfully applied {target_temp}K to active displays");
                     last_applied_temp = Some(target_temp);
                     last_failure = None;
                 }
                 Err(e) => {
-                    if last_failure.is_none() {
-                        error!("Apply {target_temp}K failed: {e} (backing off {failure_backoff:?})");
-                    } else {
-                        debug!("Apply {target_temp}K still failing: {e}");
+                    if config.auto_activate && active_vt.is_some() {
+                        let cur_vt = active_vt.unwrap();
+                        let target_vt = if cur_vt == config.monitor_tty { 2 } else { config.monitor_tty };
+                        debug!("Compositor lock on VT {cur_vt}, attempting auto-bounce to VT {target_vt}...");
+                        if let Ok(()) = vt::switch_vt(target_vt) {
+                            std::thread::sleep(Duration::from_millis(50));
+                            if let Ok(()) = apply_temperature(&config, target_temp) {
+                                info!("Successfully applied {target_temp}K via auto-bounce");
+                                last_applied_temp = Some(target_temp);
+                                last_failure = None;
+                            }
+                            let _ = vt::switch_vt(cur_vt);
+                        }
                     }
-                    last_failure = Some(now);
+
+                    if last_applied_temp != Some(target_temp) {
+                        if last_failure.is_none() {
+                            error!("Apply {target_temp}K failed: {e} (backing off {failure_backoff:?})");
+                        } else {
+                            debug!("Apply {target_temp}K still failing: {e}");
+                        }
+                        last_failure = Some(now);
+                    }
                 }
             }
             last_check = now;
@@ -253,6 +271,21 @@ pub fn apply_from_config(config_path: &str) -> Result<(), String> {
     let config = load_config(config_path).map_err(|e| e.to_string())?;
     let target_temp = choose_target_temp(&config, None);
     info!("Applying {}K from config {}", target_temp, config_path);
+    if let Ok(()) = apply_temperature(&config, target_temp) {
+        return Ok(());
+    }
+    if config.auto_activate {
+        let cur_vt = vt::active_vt().unwrap_or(1);
+        let target_vt = if cur_vt == config.monitor_tty { 2 } else { config.monitor_tty };
+        if let Ok(()) = vt::switch_vt(target_vt) {
+            std::thread::sleep(Duration::from_millis(50));
+            let res = apply_temperature(&config, target_temp);
+            let _ = vt::switch_vt(cur_vt);
+            if res.is_ok() {
+                return Ok(());
+            }
+        }
+    }
     apply_temperature(&config, target_temp).map_err(|e| e.to_string())
 }
 
