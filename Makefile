@@ -3,7 +3,7 @@
 .DEFAULT_GOAL := build
 
 NAME := drm-custom-colorfix
-VERSION := 2.1.0
+VERSION := 2.2.0
 RELEASE := 1
 RPMBUILD_DIR := $(shell pwd)/build-rpm
 

@@ -1,6 +1,6 @@
 Name:           drm-custom-colorfix
-Version:        2.1.0
-Release:        2%{?dist}
+Version:        2.2.0
+Release:        1%{?dist}
 Summary:        Screen color temperature and display calibration via DRM for COSMIC desktop
 
 License:        GPL-3.0-or-later
@@ -48,5 +48,9 @@ install -D -p -m 0644 %{name}.conf %{buildroot}%{_sysconfdir}/default/%{name}.co
 %config(noreplace) %{_sysconfdir}/default/%{name}.conf
 
 %changelog
+* Tue Aug 18 2026 fus0g <fus0g@localhost> - 2.2.0-1
+- Streamlined configuration to single constant color temperature and auto-activation
+- Removed day/night scheduler and chrono dependency
+
 * Tue Aug 18 2026 fus0g <fus0g@localhost> - 2.1.0-1
 - Renamed package to drm-custom-colorfix and added early boot calibration support
