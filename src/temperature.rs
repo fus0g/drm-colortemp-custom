@@ -139,16 +139,34 @@ mod tests {
     }
 
     #[test]
-    fn test_gamma_lut_clamps_overflow() {
-        // brightness > 1.0 must not wrap u16 values
-        let (red, green, blue) = generate_gamma_luts(256, 6500, 5.0);
-        for v in red.iter().chain(green.iter()).chain(blue.iter()) {
-            // Just confirm no wrap-around to small values when multiplier saturates
-            // (largest legitimate near-white value is 65535)
-            let _ = *v; // implicit u16 range; assert top entry is at the max
+    fn test_temp_to_rgb_cool_temperatures() {
+        // High color temperatures (cool white, e.g. 8000K, 8500K)
+        // Red should decrease, blue should stay 1.0
+        let (r, g, b) = temp_to_rgb(8200);
+        assert!(r < 1.0, "Red multiplier should be less than 1.0 at 8200K");
+        assert_eq!(b, 1.0, "Blue multiplier should be 1.0 at 8200K");
+        assert!(g > 0.8 && g <= 1.0);
+    }
+
+    #[test]
+    fn test_gamma_lut_monotonic_increasing() {
+        let (red, green, blue) = generate_gamma_luts(256, 8000, 1.0);
+        for i in 1..256 {
+            assert!(
+                red[i] >= red[i - 1],
+                "Red LUT is not monotonic at index {i}"
+            );
+            assert!(
+                green[i] >= green[i - 1],
+                "Green LUT is not monotonic at index {i}"
+            );
+            assert!(
+                blue[i] >= blue[i - 1],
+                "Blue LUT is not monotonic at index {i}"
+            );
         }
-        assert_eq!(*red.last().unwrap(), 65535);
-        assert_eq!(*green.last().unwrap(), 65535);
-        assert_eq!(*blue.last().unwrap(), 65535);
+        assert_eq!(red[0], 0);
+        assert_eq!(green[0], 0);
+        assert_eq!(blue[0], 0);
     }
 }

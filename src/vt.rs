@@ -61,4 +61,3 @@ pub fn switch_vt(vt_num: i32) -> Result<(), std::io::Error> {
     }
     Err(std::io::Error::last_os_error())
 }
-

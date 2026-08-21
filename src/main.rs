@@ -1,17 +1,20 @@
-//! DRM Color Temperature - Rust implementation
+//! DRM Custom Colorfix - Display color temperature and calibration utility.
 //!
-//! Adjust screen color temperature via DRM gamma ramps. Tracks the C
-//! implementation feature-for-feature (CLI + daemon).
+//! Supports two backends:
+//! 1. GNOME / Wayland backend via colord & ICC VCGT profiles.
+//! 2. Direct DRM backend via CRTC gamma ioctls (for COSMIC, TTYs, or root services).
 
+mod backend;
 mod config;
 mod daemon;
 mod device;
 mod drm;
+mod icc;
 mod temperature;
 mod vt;
 
 use clap::{CommandFactory, Parser};
-use log::{debug, error, info, warn};
+use log::{error, info};
 use nix::unistd::geteuid;
 use std::process::ExitCode;
 
@@ -23,12 +26,16 @@ const DEFAULT_DAEMON_CONFIG: &str = "/etc/default/drm-custom-colorfix.conf";
     name = "drm-custom-colorfix",
     author,
     version,
-    about = "Adjust DRM color temperature and display calibration",
-    long_about = "A tool for adjusting screen color temperature via DRM (Direct Rendering Manager).\n\n\
-    Examples:\n  drm-custom-colorfix -t 8200           # Set temperature to 8200K\n  \
-    drm-custom-colorfix -t 3500 -b 0.8    # Warm temperature, 80% brightness\n  \
-    drm-custom-colorfix -l                # List available displays\n  \
-    drm-custom-colorfix -r                # Reset to defaults\n  \
+    about = "Adjust display color temperature and calibration",
+    long_about = "A tool for adjusting display color temperature and white point.\n\
+    Supports GNOME / Wayland (via colord + ICC VCGT profiles) and direct DRM (COSMIC/TTY).\n\n\
+    Examples:\n  \
+    drm-custom-colorfix -t 8200                 # Set temperature to 8200K (auto-detect backend)\n  \
+    drm-custom-colorfix -t 8200 -b 0.9          # 8200K, 90% brightness\n  \
+    drm-custom-colorfix -B gnome -t 8200        # Explicitly use GNOME backend\n  \
+    drm-custom-colorfix -B drm -t 8200          # Explicitly use direct DRM backend\n  \
+    drm-custom-colorfix -l                      # List available displays\n  \
+    drm-custom-colorfix -r                      # Reset display to standard neutral\n  \
     drm-custom-colorfix --daemon -c /etc/default/drm-custom-colorfix.conf"
 )]
 struct Args {
@@ -40,11 +47,19 @@ struct Args {
     #[arg(short = 'b', long)]
     brightness: Option<f64>,
 
-    /// DRM device path
+    /// Calibration backend ('auto', 'gnome', or 'drm')
+    #[arg(short = 'B', long, default_value = "auto")]
+    backend: String,
+
+    /// Connector / display filter (e.g. 'eDP-1', 'DP-1', 'HDMI-A-1')
+    #[arg(short = 'C', long, default_value = "")]
+    connector: String,
+
+    /// DRM device path (used by direct DRM backend)
     #[arg(short = 'd', long, default_value = DEFAULT_DEVICE)]
     device: String,
 
-    /// Reset to default (6500K, brightness 1.0)
+    /// Reset to default (6500K neutral / original profile)
     #[arg(short = 'r', long)]
     reset: bool,
 
@@ -72,6 +87,18 @@ struct Args {
 fn main() -> ExitCode {
     let args = Args::parse();
     init_logging(args.verbose);
+
+    let backend_kind = match backend::BackendKind::parse(&args.backend) {
+        Some(b) => b,
+        None => {
+            eprintln!(
+                "Error: Unknown backend '{}'. Supported options: 'auto', 'gnome', 'drm'",
+                args.backend
+            );
+            return ExitCode::from(1);
+        }
+    };
+    let active_backend = backend::resolve_backend(backend_kind);
 
     if args.apply {
         info!("Applying temperature once from config: {}", args.config);
@@ -102,12 +129,56 @@ fn main() -> ExitCode {
     }
 
     if args.reset {
-        info!("Resetting to default temperature (6500K)");
-        return apply_temperature_cli(6500, 1.0, &args.device);
+        info!("Resetting display to defaults (backend: {active_backend})");
+        return match active_backend {
+            backend::BackendKind::Gnome => match backend::gnome::reset(&args.connector) {
+                Ok(()) => {
+                    println!("Successfully reset GNOME display calibration.");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    error!("GNOME reset failed: {e}");
+                    eprintln!("Error: {e}");
+                    ExitCode::from(1)
+                }
+            },
+            backend::BackendKind::Drm | backend::BackendKind::Auto => {
+                match backend::drm::reset(&args.device, &args.connector) {
+                    Ok(()) => {
+                        println!("Successfully reset DRM display gamma.");
+                        ExitCode::SUCCESS
+                    }
+                    Err(e) => {
+                        error!("DRM reset failed: {e}");
+                        eprintln!("Error: {e}");
+                        ExitCode::from(1)
+                    }
+                }
+            }
+        };
     }
 
     if args.list {
-        return list_displays(&args.device);
+        return match active_backend {
+            backend::BackendKind::Gnome => match backend::gnome::list_displays() {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    error!("GNOME list displays failed: {e}");
+                    eprintln!("Error: {e}");
+                    ExitCode::from(1)
+                }
+            },
+            backend::BackendKind::Drm | backend::BackendKind::Auto => {
+                match backend::drm::list_displays(&args.device) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(e) => {
+                        error!("DRM list displays failed: {e}");
+                        eprintln!("Error: {e}");
+                        ExitCode::from(1)
+                    }
+                }
+            }
+        };
     }
 
     if let Some(temp) = args.temperature {
@@ -120,7 +191,13 @@ fn main() -> ExitCode {
             eprintln!("Brightness must be between 0.1 and 1.0");
             return ExitCode::from(1);
         }
-        return apply_temperature_cli(temp, brightness, &args.device);
+        return apply_temperature_cli(
+            temp,
+            brightness,
+            active_backend,
+            &args.device,
+            &args.connector,
+        );
     }
 
     if let Some(brightness) = args.brightness {
@@ -128,7 +205,13 @@ fn main() -> ExitCode {
             eprintln!("Brightness must be between 0.1 and 1.0");
             return ExitCode::from(1);
         }
-        return apply_temperature_cli(6500, brightness, &args.device);
+        return apply_temperature_cli(
+            6500,
+            brightness,
+            active_backend,
+            &args.device,
+            &args.connector,
+        );
     }
 
     let _ = Args::command().print_help();
@@ -147,145 +230,49 @@ fn init_logging(verbose: bool) {
         .try_init();
 }
 
-fn apply_temperature_cli(temp: u32, brightness: f64, device_path: &str) -> ExitCode {
-    info!("Setting {temp}K, brightness {brightness:.2}");
-
-    let dev = match device::open_device(device_path) {
-        Ok(d) => d,
-        Err(e) => {
-            error!("{e}");
-            eprintln!("Error: {e}");
-            eprintln!("\nAvailable DRM devices:");
-            list_dev_dri_to_stderr();
-            eprintln!(
-                "\nTry running with sudo, or add your user to the 'video' group."
-            );
-            eprintln!("Or specify a device with: -d /dev/dri/cardX");
-            return ExitCode::from(1);
-        }
-    };
-
-    if dev.path() != device_path {
-        info!("Using device: {} (preferred {} unusable)", dev.path(), device_path);
-    }
-
-    device::try_become_master(&dev);
-
-    let res = match drm::get_resources(dev.fd()) {
-        Ok(r) => r,
-        Err(e) => {
-            error!("GETRESOURCES failed: {e}");
-            return ExitCode::from(1);
-        }
-    };
-    if res.crtcs.is_empty() {
-        error!("No CRTCs on {}", dev.path());
-        return ExitCode::from(1);
-    }
-
-    let mut success = 0u32;
-    for &crtc_id in &res.crtcs {
-        let info = match drm::get_crtc(dev.fd(), crtc_id) {
-            Ok(c) => c,
-            Err(e) => {
-                error!("GETCRTC {crtc_id}: {e}");
-                continue;
-            }
-        };
-        if !info.mode_valid {
-            debug!("Skip inactive CRTC {crtc_id}");
-            continue;
-        }
-        if info.gamma_size == 0 {
-            warn!("CRTC {crtc_id} has no gamma support");
-            continue;
-        }
-        let (r, g, b) =
-            temperature::generate_gamma_luts(info.gamma_size as usize, temp, brightness);
-        match drm::set_gamma(dev.fd(), crtc_id, &r, &g, &b) {
-            Ok(()) => {
-                info!("Applied to CRTC {crtc_id}");
-                success += 1;
-            }
-            Err(e) => error!("SETGAMMA CRTC {crtc_id}: {e}"),
-        }
-    }
-
-    if success == 0 {
-        error!("Failed to apply gamma to any display");
-        return ExitCode::from(1);
-    }
-    info!("Successfully adjusted {success} display(s)");
-    ExitCode::SUCCESS
-}
-
-fn list_displays(device_path: &str) -> ExitCode {
-    println!("Available DRM devices:");
-    let devices = device::find_all_devices(8);
-    if devices.is_empty() {
-        println!("  No DRM devices found");
-    } else {
-        for (i, p) in devices.iter().enumerate() {
-            let state = if device::device_accessible(p) {
-                "accessible"
-            } else {
-                "not accessible"
-            };
-            println!("  {}: {p} ({state})", i + 1);
-        }
-    }
-
-    println!();
-    let dev = match device::open_device(device_path) {
-        Ok(d) => d,
-        Err(e) => {
-            println!("Cannot open {device_path}: {e}");
-            return ExitCode::SUCCESS;
-        }
-    };
-    println!("Device {} details:", dev.path());
-    match drm::get_resources(dev.fd()) {
-        Ok(res) => {
-            if res.crtcs.is_empty() {
-                println!("  No CRTCs");
-            } else {
-                println!("  CRTCs:");
-                for (i, &id) in res.crtcs.iter().enumerate() {
-                    match drm::get_crtc(dev.fd(), id) {
-                        Ok(info) => println!(
-                            "    {}: ID={id}  gamma_size={}  mode_valid={}",
-                            i, info.gamma_size, info.mode_valid
-                        ),
-                        Err(e) => println!("    {}: ID={id}  (GETCRTC failed: {e})", i),
-                    }
+fn apply_temperature_cli(
+    temp: u32,
+    brightness: f64,
+    backend: backend::BackendKind,
+    device_path: &str,
+    connector: &str,
+) -> ExitCode {
+    match backend {
+        backend::BackendKind::Gnome => {
+            match backend::gnome::apply_temperature(temp, brightness, connector) {
+                Ok(count) => {
+                    println!("Successfully applied {temp}K (brightness {brightness:.2}) to {count} GNOME display(s).");
+                    ExitCode::SUCCESS
                 }
-            }
-            if !res.connectors.is_empty() {
-                println!("  Connectors:");
-                for &id in &res.connectors {
-                    match drm::get_connector(dev.fd(), id) {
-                        Ok(c) => {
-                            let (long, short) = drm::connector_names(c.connector_type, c.connector_type_id);
-                            println!(
-                                "    ID={id}  {long} (alias {short})  encoder={}",
-                                c.encoder_id
-                            );
-                        }
-                        Err(e) => println!("    ID={id}  (GETCONNECTOR failed: {e})"),
-                    }
+                Err(e) => {
+                    error!("GNOME apply failed: {e}");
+                    eprintln!("Error: {e}");
+                    eprintln!("\nTips:");
+                    eprintln!("  - Ensure colord is running and GNOME session is active.");
+                    eprintln!("  - Check displays with: drm-custom-colorfix -B gnome -l");
+                    eprintln!("  - To force the direct DRM backend instead, run: drm-custom-colorfix -B drm -t {temp}");
+                    ExitCode::from(1)
                 }
             }
         }
-        Err(e) => println!("  GETRESOURCES failed: {e}"),
-    }
-
-    ExitCode::SUCCESS
-}
-
-fn list_dev_dri_to_stderr() {
-    if let Ok(entries) = std::fs::read_dir("/dev/dri") {
-        for entry in entries.flatten() {
-            eprintln!("  {}", entry.path().display());
+        backend::BackendKind::Drm | backend::BackendKind::Auto => {
+            match backend::drm::apply_temperature(temp, brightness, device_path, connector) {
+                Ok(count) => {
+                    println!("Successfully applied {temp}K (brightness {brightness:.2}) to {count} DRM display(s).");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    error!("{e}");
+                    eprintln!("Error: {e}");
+                    eprintln!("\nTips:");
+                    eprintln!(
+                        "  - If running under GNOME/Wayland, use the GNOME backend: -B gnome"
+                    );
+                    eprintln!("  - Try running with sudo, or add your user to the 'video' group.");
+                    eprintln!("  - Or specify a device with: -d /dev/dri/cardX");
+                    ExitCode::from(1)
+                }
+            }
         }
     }
 }

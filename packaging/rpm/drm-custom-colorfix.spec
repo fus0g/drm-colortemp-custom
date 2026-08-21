@@ -1,21 +1,21 @@
 Name:           drm-custom-colorfix
-Version:        2.2.0
+Version:        2.3.0
 Release:        1%{?dist}
-Summary:        Screen color temperature and display calibration via DRM for COSMIC desktop
+Summary:        Display color temperature calibration utility for GNOME and COSMIC Wayland desktops
 
 License:        GPL-3.0-or-later
 URL:            https://github.com/fus0g/drm-colortemp-custom
 Source0:        %{name}-%{version}.tar.gz
 
 BuildRequires:  systemd-rpm-macros
+Recommends:     colord
 
 %{?systemd_requires}
 
 %description
-drm-custom-colorfix is a tool for adjusting display color temperature and gamma ramps
-directly via the Linux Direct Rendering Manager (DRM). It allows managing display
-temperature on Wayland compositors (such as COSMIC Desktop) by manipulating
-hardware gamma tables at early boot and on demand.
+drm-custom-colorfix is a tool for adjusting display color temperature and gamma ramps.
+It features dual-backend support for GNOME / Wayland (via colord and ICC VCGT profiles)
+and direct DRM CRTC control (for COSMIC Desktop and TTY sessions).
 
 %prep
 %autosetup -n %{name}-%{version}
@@ -48,6 +48,11 @@ install -D -p -m 0644 %{name}.conf %{buildroot}%{_sysconfdir}/default/%{name}.co
 %config(noreplace) %{_sysconfdir}/default/%{name}.conf
 
 %changelog
+* Sat Aug 22 2026 fus0g <fus0g@localhost> - 2.3.0-1
+- Added native GNOME / Wayland backend via colord and pure-Rust ICC VCGT generation
+- Added backend auto-detection and explicit --backend flag
+- Maintained 100% compatibility with existing DRM and COSMIC auto-bounce features
+
 * Tue Aug 18 2026 fus0g <fus0g@localhost> - 2.2.0-1
 - Streamlined configuration to single constant color temperature and auto-activation
 - Removed day/night scheduler and chrono dependency

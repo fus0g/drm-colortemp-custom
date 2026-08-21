@@ -22,6 +22,7 @@ pub struct Config {
     pub gamma_size: u32,
     pub auto_activate: bool,
     pub monitor_tty: i32,
+    pub backend: String,
 }
 
 impl Default for Config {
@@ -36,6 +37,7 @@ impl Default for Config {
             gamma_size: 0,
             auto_activate: true,
             monitor_tty: 3,
+            backend: "auto".to_string(),
         }
     }
 }
@@ -111,9 +113,16 @@ pub fn load_config<P: AsRef<Path>>(path: P) -> Result<Config, ConfigError> {
                 if value == "0" {
                     config.gamma_size = 0;
                 } else {
-                    set_int_u32(&mut config.gamma_size, key, value, GAMMA_SIZE_MIN, GAMMA_SIZE_MAX);
+                    set_int_u32(
+                        &mut config.gamma_size,
+                        key,
+                        value,
+                        GAMMA_SIZE_MIN,
+                        GAMMA_SIZE_MAX,
+                    );
                 }
             }
+            "BACKEND" => config.backend = value.to_string(),
             _ => {}
         }
     }
@@ -263,5 +272,12 @@ mod tests {
         let f = write_temp_config("DEVICE3=/dev/dri/card2\nDEVICE1=/dev/dri/card0\n");
         let c = load_config(f.path()).unwrap();
         assert_eq!(c.devices, vec!["/dev/dri/card0", "/dev/dri/card2"]);
+    }
+
+    #[test]
+    fn test_load_backend_config() {
+        let f = write_temp_config("BACKEND=gnome\n");
+        let c = load_config(f.path()).unwrap();
+        assert_eq!(c.backend, "gnome");
     }
 }

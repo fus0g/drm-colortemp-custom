@@ -104,7 +104,8 @@ fn apply_temperature(config: &Config, temp: u32) -> Result<(), &'static str> {
             } else {
                 info.gamma_size as usize
             };
-            let (r, g, b) = temperature::generate_gamma_luts(effective_size, temp, config.brightness);
+            let (r, g, b) =
+                temperature::generate_gamma_luts(effective_size, temp, config.brightness);
             match drm::set_gamma(dev.fd(), crtc_id, &r, &g, &b) {
                 Ok(()) => {
                     any_success = true;
@@ -204,7 +205,11 @@ pub fn run(config_path: &str) -> Result<(), DaemonError> {
                 Err(e) => {
                     if config.auto_activate && active_vt.is_some() {
                         let cur_vt = active_vt.unwrap();
-                        let target_vt = if cur_vt == config.monitor_tty { 2 } else { config.monitor_tty };
+                        let target_vt = if cur_vt == config.monitor_tty {
+                            2
+                        } else {
+                            config.monitor_tty
+                        };
                         debug!("Compositor lock on VT {cur_vt}, attempting auto-bounce to VT {target_vt}...");
                         if let Ok(()) = vt::switch_vt(target_vt) {
                             std::thread::sleep(Duration::from_millis(50));
@@ -243,12 +248,31 @@ pub fn apply_from_config(config_path: &str) -> Result<(), String> {
     let config = load_config(config_path).map_err(|e| e.to_string())?;
     let target_temp = config.temperature;
     info!("Applying {}K from config {}", target_temp, config_path);
+
+    let backend_kind = crate::backend::BackendKind::parse(&config.backend)
+        .unwrap_or(crate::backend::BackendKind::Auto);
+    let resolved = crate::backend::resolve_backend(backend_kind);
+
+    if resolved == crate::backend::BackendKind::Gnome {
+        info!("Applying {}K via GNOME colord backend", target_temp);
+        return crate::backend::gnome::apply_temperature(
+            config.temperature,
+            config.brightness,
+            &config.connector,
+        )
+        .map(|_| ());
+    }
+
     if let Ok(()) = apply_temperature(&config, target_temp) {
         return Ok(());
     }
     if config.auto_activate {
         let cur_vt = vt::active_vt().unwrap_or(1);
-        let target_vt = if cur_vt == config.monitor_tty { 2 } else { config.monitor_tty };
+        let target_vt = if cur_vt == config.monitor_tty {
+            2
+        } else {
+            config.monitor_tty
+        };
         if let Ok(()) = vt::switch_vt(target_vt) {
             std::thread::sleep(Duration::from_millis(50));
             let res = apply_temperature(&config, target_temp);
@@ -332,14 +356,15 @@ fn wait_for_event(inotify_fd: Option<i32>, timeout: Duration) {
     };
     let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
     let mut fds = [PollFd::new(&borrowed, PollFlags::POLLIN)];
-    let ms = timeout
-        .as_millis()
-        .min(i32::MAX as u128) as i32;
+    let ms = timeout.as_millis().min(i32::MAX as u128) as i32;
     let _ = poll(&mut fds, ms);
 }
 
 fn log_startup(c: &Config) {
-    info!("Target Temperature: {}K, Brightness: {:.2}", c.temperature, c.brightness);
+    info!(
+        "Target Temperature: {}K, Brightness: {:.2}",
+        c.temperature, c.brightness
+    );
     if !c.connector.is_empty() {
         info!("Connector filter: {}", c.connector);
     }
@@ -361,7 +386,10 @@ mod tests {
 
     #[test]
     fn test_config_basename() {
-        assert_eq!(config_basename(Path::new("/etc/drm-custom-colorfix.conf")), "drm-custom-colorfix.conf");
+        assert_eq!(
+            config_basename(Path::new("/etc/drm-custom-colorfix.conf")),
+            "drm-custom-colorfix.conf"
+        );
         assert_eq!(config_basename(Path::new("foo.conf")), "foo.conf");
     }
 }
